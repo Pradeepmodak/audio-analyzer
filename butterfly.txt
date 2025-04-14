@@ -1,0 +1,10 @@
+-----compute fft---------
+signal=[a,b,c,d] aur  N=4
+even indexes=[a,c]
+odd indexes=[b,d]
+compute_fft([a,c])=>gives[E0,E1]
+compute_fft([b,d])=>gives[O0,O1]
+
+Speed:NlogN(super fast)
+Recursion+Complex Math
+Har music app,mic,spectrum analyzer me use hota hai

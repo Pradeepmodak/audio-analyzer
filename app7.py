@@ -1,147 +1,112 @@
-import pyaudio
-# to handle audio input/output
 import numpy as np
-# for numerical operations
 import matplotlib.pyplot as plt
-# for plotting
+import matplotlib.gridspec as gridspec
 import math
-# for mathematical functions
+import wave
+import os
 
-# Constants
-SAMPLE_RATE = 44100  # Standard audio sampling rate
-# Har second mein 44,100 samples liye ja rahe hain.
-# Number of samples per frame
-SAMPLE_SIZE = 4096   # Higher sample size for smoother plots
-# Jab tum audio signal ko sample karte ho (sampling rate se), 
-# tab har sample ko digitally store karne ke liye ek number chahiye 
-# — aur sample size batata hai us number ka resolution.
+SAMPLE_RATE = 44100
+SAMPLE_SIZE = 4096
 MONO = 1
-# This means the microphone records in mono (single channel)
-#mtlb audio me koi direction nhi hoga jaise left ya right
-# speech aur voice cover ke lie best h
+
+AUDIO_FOLDER = "audiosamples"
 
 def compute_fft(signal):
-    # audio signal ya waveform ko input leta hai 
-    # — aur uska frequency domain representation 
-    # nikalta hai using FFT.
-    # Computes the Fast Fourier Transform (FFT) using the Cooley-Tukey algorithm (recursive).
-    # This version explicitly uses sine and cosine functions instead of `exp(jθ)`.
-    # :param signal: Input time-domain signal (list of real numbers)
-    # :return: FFT spectrum (list of complex numbers)
     N = len(signal)
-# Socho tumne ek 6-second ka voice message record kiya, jisme 1 second mein 1 value store ho rahi hai.
-# Toh signal mein total 6 points honge, aur len(signal) → 6.
     if N <= 1:
         return signal
 
-    # Divide: Even and Odd indexed elements
     even_fft = compute_fft(signal[0::2])
     odd_fft = compute_fft(signal[1::2])
 
-    # Compute FFT using sine and cosine
     T = [complex(math.cos(-2 * math.pi * k / N), math.sin(-2 * math.pi * k / N)) * odd_fft[k] for k in range(N // 2)]
 
     return [even_fft[k] + T[k] for k in range(N // 2)] + [even_fft[k] - T[k] for k in range(N // 2)]
 
 def compute_fft_frequencies(N, sample_rate):
-    # Computes the FFT frequency bins 
-    # :param N: Number of samples (FFT length)
-    # :param sample_rate: Sampling rate of the audio signal
-    # :return: Array of frequency bins
     return [(k * sample_rate) / N for k in range(N // 2)]
-    # N // 2 ka matlab hai: N ko half kar ke sequence banayi jaayegi
-    # Yeh jo N // 2 use hota hai, uska reason actually bahut simple hai — jab tum FFT perform karte ho,
-    #  toh tumhe sirf positive frequencies ki zarurat hoti hai.
 
-def get_microphone_list():
-    #Returns a dictionary of available microphone devices.
-    pyaud = pyaudio.PyAudio()
-    devices = {}
-    for i in range(pyaud.get_device_count()):
-        dev_info = pyaud.get_device_info_by_index(i)
-        if int(dev_info["maxInputChannels"]) > 0:
-            devices[dev_info["name"]] = dev_info["index"]
-    pyaud.terminate()
-    return devices
+def find_peak_frequency_by_derivative(freq_data, magnitude):
+    derivative = [magnitude[i + 1] - magnitude[i] for i in range(len(magnitude) - 1)]
+    peak_indices = [i for i in range(1, len(derivative)) if derivative[i - 1] > 0 and derivative[i] < 0]
 
-def record_audio(mic_index):
-    #Records audio from the selected microphone and plots waveforms in real-time.
-    pyaud = pyaudio.PyAudio()
+    if not peak_indices:
+        return None
 
-    try:
-        stream = pyaud.open(format=pyaudio.paInt16,
-                            channels=MONO,
-                            rate=SAMPLE_RATE,
-                            input=True,
-                            frames_per_buffer=SAMPLE_SIZE,
-                            input_device_index=mic_index)
-    except OSError:
-        print("Invalid microphone index. Please select a valid microphone.")
-        pyaud.terminate()
-        return
+    best_peak = max(peak_indices, key=lambda i: magnitude[i])
+    return freq_data[best_peak]
 
+def visualize_fft_stream(audio_data_stream):
     plt.ion()
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 6), dpi=100)
+    fig = plt.figure(figsize=(14, 7), dpi=100)
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 1])
+    fig.suptitle("Audio FFT Visualization", fontsize=16, fontweight='bold')
 
-    # Time-domain plot (Amplitude vs Time)
+    ax1 = plt.subplot(gs[0])
     time_data = np.arange(SAMPLE_SIZE) / SAMPLE_RATE
-    line1, = ax1.plot(time_data, np.zeros(SAMPLE_SIZE), color='b', label="Audio Signal")
+    line1, = ax1.plot(time_data, np.zeros(SAMPLE_SIZE), color='#1f77b4', linewidth=1.5)
     ax1.set_xlabel("Time (s)")
     ax1.set_ylabel("Amplitude")
     ax1.set_title("Time-Domain Waveform")
-    ax1.legend()
-    ax1.grid(True)
-    ax1.set_ylim(-32768, 32767)  # 16-bit integer range
+    ax1.grid(True, linestyle='--', alpha=0.5)
+    ax1.set_ylim(-32768, 32767)
 
-    # Frequency-domain plot (Frequency vs Magnitude)
+    ax2 = plt.subplot(gs[1])
     freq_data = compute_fft_frequencies(SAMPLE_SIZE, SAMPLE_RATE)
-    line2, = ax2.plot(freq_data, np.zeros(len(freq_data)), color='r', label="FFT Spectrum")
+    line2, = ax2.plot(freq_data, np.zeros(len(freq_data)), color='#d62728', linewidth=1.5)
     ax2.set_xlabel("Frequency (Hz)")
     ax2.set_ylabel("Magnitude")
     ax2.set_title("Frequency-Domain Spectrum")
-    ax2.legend()
-    ax2.grid(True)
-    ax2.set_ylim(0, 50000)  # Set upper limit for better visualization
+    ax2.grid(True, linestyle='--', alpha=0.5)
+    ax2.set_ylim(0, 10000)
 
-    try:
+    text = ax2.text(0.7, 0.85, '', transform=ax2.transAxes, color='green', fontsize=12, bbox=dict(facecolor='white', edgecolor='green'))
+
+    for audio_data in audio_data_stream:
+        if len(audio_data) != SAMPLE_SIZE:
+            continue
+
+        fft_complex = np.array(compute_fft(audio_data))
+        fft_magnitude = np.abs(fft_complex[:SAMPLE_SIZE // 2])
+
+        peak_freq = find_peak_frequency_by_derivative(freq_data, fft_magnitude)
+        if peak_freq:
+            print(f"Dominant Frequency (derivative): {peak_freq:.2f} Hz")
+            text.set_text(f"Peak Frequency: {peak_freq:.2f} Hz")
+
+        line1.set_ydata(audio_data)
+        line2.set_ydata(fft_magnitude)
+
+        plt.draw()
+        plt.pause(0.05)
+
+    plt.ioff()
+    plt.show()
+
+def process_audio_file(file_path):
+    with wave.open(file_path, 'rb') as wf:
+        n_frames = wf.getnframes()
+        audio_data_stream = []
+
         while True:
-            # Read audio data
-            audio_data = np.frombuffer(stream.read(SAMPLE_SIZE, exception_on_overflow=False), dtype=np.int16)
+            frames = wf.readframes(SAMPLE_SIZE)
+            if not frames or len(frames) < SAMPLE_SIZE * 2:
+                break
+            audio_data = np.frombuffer(frames, dtype=np.int16)
+            audio_data_stream.append(audio_data)
 
-            # Compute FFT manually (convert result to NumPy array)
-            fft_complex = np.array(compute_fft(audio_data))
-            fft_magnitude = np.abs(fft_complex[:SAMPLE_SIZE // 2])  # Take half for positive frequencies
-
-            # Update time-domain plot
-            line1.set_ydata(audio_data)
-
-            # Update frequency-domain plot
-            line2.set_ydata(fft_magnitude)
-
-            # Update plots
-            plt.draw()
-            plt.pause(0.05)  # Faster updates for a smoother real-time effect
-
-    except KeyboardInterrupt:
-        print("\nStopping...")
-        stream.stop_stream()
-        stream.close()
-        pyaud.terminate()
-        plt.ioff()
-        plt.show()
+        if audio_data_stream:
+            visualize_fft_stream(audio_data_stream)
 
 if __name__ == "__main__":
-    print("Available Microphones:", get_microphone_list())
-    
-    try:
-        mic_index = int(input("Enter the index of your microphone: "))
-        record_audio(mic_index)
-    except ValueError:
-        print("Invalid input. Please enter a valid microphone index.")
-
-
-# resouces 
-# https://builtin.com/articles/fast-fourier-transform
-# https://www.dsprelated.com/showarticle/1712.php
-# https://www.sweetwater.com/sweetcare/articles/sample-rate/
-# Audio Bit Depth and Sample Rate Explained - YouTube
+    folder_path = AUDIO_FOLDER
+    if os.path.isdir(folder_path):
+        wav_files = [f for f in os.listdir(folder_path) if f.endswith('.wav')]
+        if not wav_files:
+            print("No .wav files found in the directory.")
+        else:
+            file_name = wav_files[4]  # Only process the first one
+            print(f"Processing: {file_name}")
+            process_audio_file(os.path.join(folder_path, file_name))
+    else:
+        print("Invalid folder path.")
